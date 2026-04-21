@@ -474,7 +474,22 @@ def get_gspread_client():
 
 def fill_gsheet(rows, sheet_url):
     gc = get_gspread_client()
-    sh = gc.open_by_url(sheet_url)
+    try:
+        sh = gc.open_by_url(sheet_url)
+    except Exception as e:
+        err = str(e)
+        if "404" in err:
+            raise ValueError(
+                "Không tìm thấy Google Sheet. Hãy kiểm tra:\n"
+                "1. URL đúng chưa?\n"
+                f"2. Đã share file cho st-en-98@fine-ring-441304-r2.iam.gserviceaccount.com quyền Editor chưa?"
+            )
+        if "403" in err:
+            raise ValueError(
+                "Không có quyền truy cập Google Sheet. "
+                "Hãy share file cho st-en-98@fine-ring-441304-r2.iam.gserviceaccount.com quyền Editor."
+            )
+        raise ValueError(f"Lỗi mở Google Sheet: {err}")
     ws = sh.sheet1
 
     # Find first empty row in column D (PO No.)
