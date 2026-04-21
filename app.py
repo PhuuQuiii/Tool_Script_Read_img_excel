@@ -32,16 +32,24 @@ SCOPES = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/a
 PORT = int(os.environ.get("PORT", 8765))
 
 PROMPT = """
-Look at this image carefully. Find and extract these 4 fields:
-1. PO No. (Purchase Order Number) - alphanumeric code like BJQ4003969
-2. GR Date (Goods Receipt Date) - a date like 06/11/2024
-3. WorkScope / Scope - short code like REP, RCT, OHC, RBTH, INS, etc.
-4. Vendor Name - company/supplier name
+This image contains a table with multiple rows of data. Extract EVERY row from the table.
+For each row, extract these 4 fields:
+1. po_no: PO Number (e.g. BJQ4010061, BAK4016030, BIT4000172, BJL5001427)
+2. gr_date: GR Date in DD/MM/YYYY format (e.g. 21/02/2026). If the cell is empty or "-", use null.
+3. scope: WorkScope code (e.g. RCT, OHC, REP, SOS, MOD, INS, RBTH). If empty, use null.
+4. vendor_name: Vendor/supplier name (e.g. SAFRAN, THALES). If truncated, write what you can read.
 
-Return ONLY a JSON object (no extra text, no markdown):
-{"po_no": "...", "gr_date": "...", "scope": "...", "vendor_name": "..."}
+Return ONLY a JSON array — one object per data row, no extra text, no markdown:
+[
+  {"po_no": "...", "gr_date": "...", "scope": "...", "vendor_name": "..."},
+  {"po_no": "...", "gr_date": "...", "scope": "...", "vendor_name": "..."}
+]
 
-If a field is not found, use null. Date must be in DD/MM/YYYY format.
+Rules:
+- Include ALL rows visible in the image, do not skip any.
+- Skip header rows (rows with column names like "PO No.", "GR Date", etc.).
+- Date must be DD/MM/YYYY format.
+- If a field is missing or "-", use null.
 """
 
 HTML = """<!DOCTYPE html>
@@ -320,20 +328,32 @@ async function processNow() {
 
 function showSuccess(data) {
   document.getElementById('result-badge').innerHTML = '<span class="badge-success">✓ Thành công</span>';
-  document.getElementById('fields-grid').style.display = 'grid';
+  document.getElementById('fields-grid').style.display = 'none';
 
-  const setField = (id, val) => {
-    const el = document.getElementById(id);
-    if (val) { el.textContent = val; el.className = 'field-value'; }
-    else { el.textContent = 'Không tìm thấy'; el.className = 'field-value missing'; }
-  };
-  setField('r-po', data.po_no);
-  setField('r-date', data.gr_date);
-  setField('r-scope', data.scope);
-  setField('r-vendor', data.vendor_name);
+  const rows = data.rows || [];
+  let tableHtml = '';
+  if (rows.length > 0) {
+    tableHtml = `<table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:12px">
+      <thead><tr style="background:#f1f3f4">
+        <th style="padding:6px 8px;text-align:left;border-bottom:1px solid #ddd">PO No.</th>
+        <th style="padding:6px 8px;text-align:left;border-bottom:1px solid #ddd">GR Date</th>
+        <th style="padding:6px 8px;text-align:left;border-bottom:1px solid #ddd">Scope</th>
+        <th style="padding:6px 8px;text-align:left;border-bottom:1px solid #ddd">Vendor</th>
+      </tr></thead><tbody>`;
+    rows.forEach(r => {
+      tableHtml += `<tr>
+        <td style="padding:5px 8px;border-bottom:1px solid #eee">${r.po_no||'—'}</td>
+        <td style="padding:5px 8px;border-bottom:1px solid #eee">${r.gr_date||'—'}</td>
+        <td style="padding:5px 8px;border-bottom:1px solid #eee">${r.scope||'—'}</td>
+        <td style="padding:5px 8px;border-bottom:1px solid #eee">${r.vendor_name||'—'}</td>
+      </tr>`;
+    });
+    tableHtml += '</tbody></table>';
+  }
 
   document.getElementById('result-msg').innerHTML =
-    '<div class="success-msg">✅ Đã điền thành công vào dòng <strong>' + data.row + '</strong> trong Google Sheet!</div>';
+    tableHtml +
+    '<div class="success-msg">✅ Đã điền <strong>' + data.count + ' dòng</strong> (dòng ' + data.first_row + ' → ' + data.last_row + ') vào Google Sheet!</div>';
   document.getElementById('result-card').style.display = 'block';
 }
 
@@ -405,17 +425,22 @@ def extract_from_image(image_b64, media_type):
         raise ValueError("Gemini trả về phản hồi rỗng hoặc bị chặn.")
 
     text = text.strip()
-    # Strip markdown code fences if present
     text = re.sub(r'^```(?:json)?\s*', '', text, flags=re.IGNORECASE)
     text = re.sub(r'\s*```\s*$', '', text)
     text = text.strip()
 
-    print(f"[DEBUG] text after strip: {repr(text)}")
+    # Try array first, then single object
+    match = re.search(r'\[.*\]', text, re.DOTALL)
+    if match:
+        rows = json.loads(match.group())
+        if isinstance(rows, list) and rows:
+            return rows
 
     match = re.search(r'\{.*\}', text, re.DOTALL)
-    print(f"[DEBUG] regex match: {repr(match.group()) if match else None}")
     if match:
-        return json.loads(match.group())
+        obj = json.loads(match.group())
+        return [obj]
+
     raise ValueError(f"Không thể đọc dữ liệu từ ảnh: {text[:200]}")
 
 
@@ -447,12 +472,12 @@ def get_gspread_client():
     return gspread.authorize(creds)
 
 
-def fill_gsheet(data, sheet_url):
+def fill_gsheet(rows, sheet_url):
     gc = get_gspread_client()
     sh = gc.open_by_url(sheet_url)
     ws = sh.sheet1
 
-    # Find first empty row in column D (PO_NO)
+    # Find first empty row in column D (PO No.)
     col_d = ws.col_values(4)
     next_row = 2
     for i, val in enumerate(col_d):
@@ -463,20 +488,18 @@ def fill_gsheet(data, sheet_url):
             break
         next_row = i + 2
 
-    # Get row_num from col B
-    row_num_cell = ws.cell(next_row, 2).value
-    row_num = int(row_num_cell) if row_num_cell else (next_row - 1)
+    updates = []
+    for i, row in enumerate(rows):
+        r = next_row + i
+        updates += [
+            {"range": f"{col_letter(4)}{r}", "values": [[row.get("po_no") or ""]]},
+            {"range": f"{col_letter(6)}{r}", "values": [[row.get("gr_date") or ""]]},
+            {"range": f"{col_letter(8)}{r}", "values": [[row.get("scope") or ""]]},
+            {"range": f"{col_letter(10)}{r}", "values": [[row.get("vendor_name") or ""]]},
+        ]
 
-    # Write all 4 cells in one batch_update call
-    updates = [
-        {"range": f"{col_letter(4)}{next_row}", "values": [[data.get("po_no") or ""]]},
-        {"range": f"{col_letter(6)}{next_row}", "values": [[data.get("gr_date") or ""]]},
-        {"range": f"{col_letter(8)}{next_row}", "values": [[data.get("scope") or ""]]},
-        {"range": f"{col_letter(10)}{next_row}", "values": [[data.get("vendor_name") or ""]]},
-    ]
     ws.batch_update(updates, value_input_option="USER_ENTERED")
-
-    return row_num
+    return next_row, next_row + len(rows) - 1
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -548,14 +571,19 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             print("[process] Đang đọc ảnh...")
-            extracted = extract_from_image(body["image"], body["media_type"])
-            print(f"[process] Đọc được: {extracted}")
+            rows = extract_from_image(body["image"], body["media_type"])
+            print(f"[process] Đọc được {len(rows)} dòng: {rows}")
 
             print("[process] Đang ghi vào Google Sheet...")
-            row_num = fill_gsheet(extracted, body["sheet_url"])
-            print(f"[process] Ghi thành công dòng {row_num}")
+            first_row, last_row = fill_gsheet(rows, body["sheet_url"])
+            print(f"[process] Ghi thành công dòng {first_row}-{last_row}")
 
-            self.send_json({**extracted, "row": row_num}, 200)
+            self.send_json({
+                "rows": rows,
+                "count": len(rows),
+                "first_row": first_row,
+                "last_row": last_row,
+            }, 200)
 
         except Exception as e:
             import traceback
