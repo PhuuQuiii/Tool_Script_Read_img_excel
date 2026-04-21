@@ -5,7 +5,8 @@ import os
 import json
 import base64
 import re
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn, TCPServer
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -562,9 +563,14 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": str(e)}, 500)
 
 
+class ThreadingHTTPServer(ThreadingMixIn, TCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+
 if __name__ == "__main__":
     print(f"🚀 Mở trình duyệt tại: http://localhost:{PORT}")
     if not check_credentials():
         print("⚠️  Chưa có credentials.json — xem hướng dẫn trên trang web")
     print("Nhấn Ctrl+C để dừng.\n")
-    HTTPServer(("", PORT), Handler).serve_forever()
+    ThreadingHTTPServer(("", PORT), Handler).serve_forever()
