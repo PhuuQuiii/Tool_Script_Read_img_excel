@@ -482,6 +482,14 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        if self.path == "/debug":
+            self.send_json({
+                "GEMINI_API_KEY": bool(os.environ.get("GEMINI_API_KEY")),
+                "GOOGLE_CREDENTIALS_JSON": bool(os.environ.get("GOOGLE_CREDENTIALS_JSON")),
+                "CREDS_FILE_EXISTS": os.path.exists(CREDS_FILE),
+                "check_credentials": check_credentials(),
+            })
+            return
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
