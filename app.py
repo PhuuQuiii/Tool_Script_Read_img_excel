@@ -28,7 +28,7 @@ if not API_KEY:
 
 CREDS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "credentials.json")
 SCOPES = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-PORT = 8765
+PORT = int(os.environ.get("PORT", 8765))
 
 PROMPT = """
 Look at this image carefully. Find and extract these 4 fields:
@@ -373,40 +373,98 @@ def extract_from_image(image_b64, media_type):
     image_part = types.Part.from_bytes(data=base64.b64decode(image_b64), mime_type=media_type)
     response = client.models.generate_content(
         model="gemini-2.5-flash",
-        contents=[PROMPT, image_part]
+        contents=[PROMPT, image_part],
     )
-    text = response.text.strip()
+
+    # For thinking models, collect only non-thought text parts
+    text = None
+    try:
+        if response.candidates:
+            parts_text = []
+            for part in response.candidates[0].content.parts:
+                if getattr(part, "thought", False):
+                    continue
+                if getattr(part, "text", None):
+                    parts_text.append(part.text)
+            if parts_text:
+                text = "".join(parts_text)
+    except Exception:
+        pass
+
+    # Fallback to response.text
+    if not text:
+        try:
+            text = response.text
+        except Exception:
+            pass
+
+    print(f"[DEBUG] raw text from Gemini: {repr(text)}")
+
+    if not text or not text.strip():
+        raise ValueError("Gemini trả về phản hồi rỗng hoặc bị chặn.")
+
+    text = text.strip()
+    # Strip markdown code fences if present
+    text = re.sub(r'^```(?:json)?\s*', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\s*```\s*$', '', text)
+    text = text.strip()
+
+    print(f"[DEBUG] text after strip: {repr(text)}")
+
     match = re.search(r'\{.*\}', text, re.DOTALL)
+    print(f"[DEBUG] regex match: {repr(match.group()) if match else None}")
     if match:
         return json.loads(match.group())
-    raise ValueError(f"Không thể đọc dữ liệu từ ảnh: {text}")
+    raise ValueError(f"Không thể đọc dữ liệu từ ảnh: {text[:200]}")
+
+
+def col_letter(n):
+    """Convert 1-based column index to letter (1→A, 4→D, ...)."""
+    s = ""
+    while n:
+        n, r = divmod(n - 1, 26)
+        s = chr(65 + r) + s
+    return s
+
+
+def get_gspread_client():
+    creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
+    if creds_json:
+        info = json.loads(base64.b64decode(creds_json).decode())
+        creds = Credentials.from_service_account_info(info, scopes=SCOPES)
+    else:
+        creds = Credentials.from_service_account_file(CREDS_FILE, scopes=SCOPES)
+    return gspread.authorize(creds)
 
 
 def fill_gsheet(data, sheet_url):
-    creds = Credentials.from_service_account_file(CREDS_FILE, scopes=SCOPES)
-    gc = gspread.authorize(creds)
+    gc = get_gspread_client()
     sh = gc.open_by_url(sheet_url)
     ws = sh.sheet1
 
     # Find first empty row in column D (PO_NO)
-    col_d = ws.col_values(4)  # 1-based col index
+    col_d = ws.col_values(4)
     next_row = 2
     for i, val in enumerate(col_d):
         if i == 0:
-            continue  # skip header
+            continue
         if not str(val).strip():
             next_row = i + 1
             break
         next_row = i + 2
 
-    # Get row_num from col B (pre-filled sequence number)
+    # Get row_num from col B
     row_num_cell = ws.cell(next_row, 2).value
     row_num = int(row_num_cell) if row_num_cell else (next_row - 1)
 
-    ws.update_cell(next_row, 4, data.get("po_no") or "")
-    ws.update_cell(next_row, 6, data.get("gr_date") or "")
-    ws.update_cell(next_row, 8, data.get("scope") or "")
-    ws.update_cell(next_row, 10, data.get("vendor_name") or "")
+    # Write all 4 cells in one batch_update call
+    updates = [
+        {"range": f"{col_letter(4)}{next_row}", "values": [[data.get("po_no") or ""]]},
+        {"range": f"{col_letter(6)}{next_row}", "values": [[data.get("gr_date") or ""]]},
+        {"range": f"{col_letter(8)}{next_row}", "values": [[data.get("scope") or ""]]},
+        {"range": f"{col_letter(10)}{next_row}", "values": [[data.get("vendor_name") or ""]]},
+    ]
+    ws.batch_update(updates, value_input_option="USER_ENTERED")
 
     return row_num
 
