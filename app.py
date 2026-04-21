@@ -365,7 +365,7 @@ validateUrl();
 
 
 def check_credentials():
-    return os.path.exists(CREDS_FILE)
+    return os.path.exists(CREDS_FILE) or bool(os.environ.get("GOOGLE_CREDENTIALS_JSON"))
 
 
 def extract_from_image(image_b64, media_type):
