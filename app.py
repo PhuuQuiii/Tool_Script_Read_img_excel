@@ -488,7 +488,18 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(HTML.encode())
 
     def do_POST(self):
-        if self.path != "/process":
+        try:
+            self._handle_post()
+        except Exception as e:
+            import traceback
+            print(f"[do_POST CRASH] {traceback.format_exc()}")
+            try:
+                self.send_json({"error": f"Server error: {e}"}, 500)
+            except Exception:
+                pass
+
+    def _handle_post(self):
+        if self.path.rstrip("/") != "/process":
             self.send_json({"error": "Not found"}, 404)
             return
 
@@ -529,7 +540,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({**extracted, "row": row_num}, 200)
 
         except Exception as e:
-            print(f"[process] ERROR: {e}")
+            import traceback
+            print(f"[process] ERROR: {traceback.format_exc()}")
             self.send_json({"error": str(e)}, 500)
 
 
