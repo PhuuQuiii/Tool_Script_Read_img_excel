@@ -430,7 +430,16 @@ def col_letter(n):
 def get_gspread_client():
     creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
     if creds_json:
-        info = json.loads(base64.b64decode(creds_json).decode())
+        creds_json = creds_json.strip()
+        # Support both raw JSON and base64-encoded JSON
+        if creds_json.startswith("{"):
+            info = json.loads(creds_json)
+        else:
+            # Fix base64 padding if needed
+            padding = 4 - len(creds_json) % 4
+            if padding != 4:
+                creds_json += "=" * padding
+            info = json.loads(base64.b64decode(creds_json).decode())
         creds = Credentials.from_service_account_info(info, scopes=SCOPES)
     else:
         creds = Credentials.from_service_account_file(CREDS_FILE, scopes=SCOPES)
